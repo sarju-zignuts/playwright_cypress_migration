@@ -1,0 +1,51 @@
+{
+  "name": "playwright-ai-testing",
+  "version": "1.0.0",
+  "description": "Playwright E2E Testing Suite - Cypress Migration & AI UI Testing for Streaming LLM Interfaces",
+  "main": "index.js",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:debug": "playwright test --debug",
+    "test:chromium": "playwright test --project=chromium",
+    "test:firefox": "playwright test --project=firefox",
+    "test:webkit": "playwright test --project=webkit",
+    "test:chrome-safari": "playwright test --project=chromium --project=webkit --workers=6",
+    "test:migrated": "playwright test tests/migrated",
+    "test:migrated:chrome-safari": "playwright test tests/migrated --project=chromium --project=webkit --workers=6",
+    "test:ai-ui": "playwright test tests/ai-ui",
+    "test:streaming": "playwright test tests/ai-ui/streaming",
+    "test:retry": "playwright test tests/ai-ui/retry",
+    "test:errors": "playwright test tests/ai-ui/errors",
+    "test:interactions": "playwright test tests/ai-ui/interactions",
+    "test:parallel": "playwright test --workers=8",
+    "test:parallel:max": "playwright test --workers=100%",
+    "test:sequential": "playwright test --workers=1",
+    "test:fast": "playwright test --workers=75%",
+    "report": "playwright show-report",
+    "codegen": "playwright codegen",
+    "install:browsers": "playwright install --with-deps",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "playwright",
+    "e2e",
+    "testing",
+    "ai-ui",
+    "streaming",
+    "llm",
+    "cypress-migration",
+    "automation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "devDependencies": {
+    "@faker-js/faker": "^10.4.0",
+    "@playwright/test": "^1.60.0",
+    "@types/node": "^25.8.0",
+    "dotenv": "^17.4.2",
+    "typescript": "^6.0.3"
+  }
+}

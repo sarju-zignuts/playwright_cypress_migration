@@ -1,0 +1,51 @@
+{
+  "streaming": [
+    {
+      "id": "quick-response",
+      "prompt": "Say hello",
+      "expectedDuration": "fast",
+      "expectedChunks": 5
+    },
+    {
+      "id": "medium-response",
+      "prompt": "Write a paragraph about the ocean",
+      "expectedDuration": "medium",
+      "expectedChunks": 20
+    },
+    {
+      "id": "long-response",
+      "prompt": "Write a detailed article about machine learning",
+      "expectedDuration": "slow",
+      "expectedChunks": 50
+    }
+  ],
+  "errorScenarios": [
+    {
+      "id": "timeout",
+      "prompt": "Generate a very long response",
+      "expectedError": "timeout"
+    },
+    {
+      "id": "rate-limit",
+      "prompt": "Test rate limiting",
+      "expectedError": "rate_limit"
+    },
+    {
+      "id": "invalid-input",
+      "prompt": "",
+      "expectedError": "validation"
+    }
+  ],
+  "retryScenarios": [
+    {
+      "id": "simple-retry",
+      "initialPrompt": "Write about cats",
+      "retryPrompt": "Write about dogs instead"
+    },
+    {
+      "id": "refine-response",
+      "initialPrompt": "Explain AI",
+      "retryPrompt": "Make it simpler"
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "credentials": {
+    "valid": {
+      "username": "Admin",
+      "password": "admin123"
+    },
+    "invalid": {
+      "username": "InvalidUser",
+      "password": "wrongpassword"
+    }
+  },
+  "employees": [
+    {
+      "firstName": "John",
+      "lastName": "Doe",
+      "email": "john.doe@example.com",
+      "employeeId": "EMP001"
+    },
+    {
+      "firstName": "Jane",
+      "lastName": "Smith",
+      "email": "jane.smith@example.com",
+      "employeeId": "EMP002"
+    }
+  ],
+  "aiPrompts": [
+    {
+      "id": "simple",
+      "prompt": "Write a short story about a robot",
+      "expectedLength": "short"
+    },
+    {
+      "id": "medium",
+      "prompt": "Explain quantum computing in simple terms",
+      "expectedLength": "medium"
+    },
+    {
+      "id": "long",
+      "prompt": "Write a detailed essay about the history of artificial intelligence",
+      "expectedLength": "long"
+    }
+  ]
+}

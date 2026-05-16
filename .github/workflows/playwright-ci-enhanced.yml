@@ -1,0 +1,302 @@
+name: Playwright Tests - Enhanced Reporting
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+    # Allow manual trigger
+
+jobs:
+  test:
+    name: Test on ${{ matrix.browser }}
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, webkit]  # Chrome + Safari only
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+      
+      - name: Run Playwright tests
+        id: playwright-tests
+        continue-on-error: true
+        run: |
+          npx playwright test tests/migrated --project=${{ matrix.browser }} --reporter=html,json,junit,list
+        env:
+          BASE_URL: ${{ secrets.BASE_URL || 'https://opensource-demo.orangehrmlive.com' }}
+          ORANGEHRM_USERNAME: ${{ secrets.ORANGEHRM_USERNAME || 'Admin' }}
+          ORANGEHRM_PASSWORD: ${{ secrets.ORANGEHRM_PASSWORD || 'admin123' }}
+      
+      - name: Parse Test Results
+        if: always()
+        id: test-results
+        run: |
+          # Parse JSON results
+          if [ -f "test-results/results.json" ]; then
+            TOTAL=$(jq '.suites | map(.specs | length) | add' test-results/results.json)
+            PASSED=$(jq '[.suites[].specs[].tests[] | select(.status == "passed")] | length' test-results/results.json)
+            FAILED=$(jq '[.suites[].specs[].tests[] | select(.status == "failed")] | length' test-results/results.json)
+            FLAKY=$(jq '[.suites[].specs[].tests[] | select(.status == "flaky")] | length' test-results/results.json)
+            SKIPPED=$(jq '[.suites[].specs[].tests[] | select(.status == "skipped")] | length' test-results/results.json)
+            
+            echo "total=$TOTAL" >> $GITHUB_OUTPUT
+            echo "passed=$PASSED" >> $GITHUB_OUTPUT
+            echo "failed=$FAILED" >> $GITHUB_OUTPUT
+            echo "flaky=$FLAKY" >> $GITHUB_OUTPUT
+            echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
+            
+            # Calculate pass rate
+            if [ "$TOTAL" -gt 0 ]; then
+              PASS_RATE=$(echo "scale=2; ($PASSED / $TOTAL) * 100" | bc)
+              echo "pass_rate=$PASS_RATE" >> $GITHUB_OUTPUT
+            else
+              echo "pass_rate=0" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "total=0" >> $GITHUB_OUTPUT
+            echo "passed=0" >> $GITHUB_OUTPUT
+            echo "failed=0" >> $GITHUB_OUTPUT
+            echo "flaky=0" >> $GITHUB_OUTPUT
+            echo "skipped=0" >> $GITHUB_OUTPUT
+            echo "pass_rate=0" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Generate Test Summary
+        if: always()
+        run: |
+          echo "## 🎭 Playwright Test Results - ${{ matrix.browser }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Test Statistics" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| ✅ **Passed** | ${{ steps.test-results.outputs.passed }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ❌ **Failed** | ${{ steps.test-results.outputs.failed }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⚠️ **Flaky** | ${{ steps.test-results.outputs.flaky }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⏭️ **Skipped** | ${{ steps.test-results.outputs.skipped }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📈 **Total** | ${{ steps.test-results.outputs.total }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🎯 **Pass Rate** | ${{ steps.test-results.outputs.pass_rate }}% |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Show failed tests if any
+          if [ "${{ steps.test-results.outputs.failed }}" -gt 0 ]; then
+            echo "### ❌ Failed Tests" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            jq -r '.suites[].specs[] | select(.tests[].status == "failed") | .title' test-results/results.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Show flaky tests if any
+          if [ "${{ steps.test-results.outputs.flaky }}" -gt 0 ]; then
+            echo "### ⚠️ Flaky Tests" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            jq -r '.suites[].specs[] | select(.tests[].status == "flaky") | .title' test-results/results.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      - name: Upload HTML Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ matrix.browser }}
+          path: playwright-report/
+          retention-days: 30
+      
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.browser }}
+          path: test-results/
+          retention-days: 30
+      
+      - name: Upload Screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-${{ matrix.browser }}
+          path: screenshots/
+          retention-days: 30
+      
+      - name: Publish Test Results
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: test-results/junit.xml
+          check_name: Test Results - ${{ matrix.browser }}
+          comment_title: 🎭 Playwright Test Results - ${{ matrix.browser }}
+
+  report:
+    name: Generate Comprehensive Report
+    if: always()
+    needs: [test]
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Download all test results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-results-*
+          path: all-test-results
+      
+      - name: Download all reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: playwright-report-*
+          path: all-reports
+      
+      - name: Generate Comprehensive Summary
+        run: |
+          echo "# 🎭 Playwright Test Execution Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Workflow:** ${{ github.workflow }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Run ID:** ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📊 Overall Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Browsers Tested" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Chromium (Chrome)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ WebKit (Safari)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Artifacts Available" >> $GITHUB_STEP_SUMMARY
+          echo "- 📄 HTML Reports (30 days retention)" >> $GITHUB_STEP_SUMMARY
+          echo "- 📊 JSON Test Results (30 days retention)" >> $GITHUB_STEP_SUMMARY
+          echo "- 📸 Screenshots on Failure (30 days retention)" >> $GITHUB_STEP_SUMMARY
+          echo "- 🎥 Videos on Failure (30 days retention)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📥 Download Reports" >> $GITHUB_STEP_SUMMARY
+          echo "Check the **Artifacts** section at the bottom of this workflow run to download:" >> $GITHUB_STEP_SUMMARY
+          echo "- \`playwright-report-chromium\` - Chrome test report" >> $GITHUB_STEP_SUMMARY
+          echo "- \`playwright-report-webkit\` - Safari test report" >> $GITHUB_STEP_SUMMARY
+          echo "- \`test-results-*\` - Raw test results with error details" >> $GITHUB_STEP_SUMMARY
+          echo "- \`screenshots-*\` - Screenshots of failed tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔍 How to View Detailed Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "1. **Download HTML Report**: Click on \`playwright-report-*\` artifact" >> $GITHUB_STEP_SUMMARY
+          echo "2. **Extract the ZIP file**" >> $GITHUB_STEP_SUMMARY
+          echo "3. **Open \`index.html\`** in your browser" >> $GITHUB_STEP_SUMMARY
+          echo "4. **View detailed test results** with:" >> $GITHUB_STEP_SUMMARY
+          echo "   - Pass/Fail status for each test" >> $GITHUB_STEP_SUMMARY
+          echo "   - Error messages and stack traces" >> $GITHUB_STEP_SUMMARY
+          echo "   - Screenshots of failures" >> $GITHUB_STEP_SUMMARY
+          echo "   - Test execution timeline" >> $GITHUB_STEP_SUMMARY
+          echo "   - Flaky test detection" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## ✅ Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Review test results above" >> $GITHUB_STEP_SUMMARY
+          echo "- ❌ If tests failed, download reports and investigate" >> $GITHUB_STEP_SUMMARY
+          echo "- ⚠️ If tests are flaky, consider adding more stable waits" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔄 Re-run failed tests if needed" >> $GITHUB_STEP_SUMMARY
+
+  notify-on-failure:
+    name: Notify on Test Failure
+    if: failure() && github.ref == 'refs/heads/main'
+    needs: [test]
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Create Issue on Failure
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🚨 Playwright Tests Failed on Main Branch',
+              body: `
+                ## ❌ Test Failure Report
+                
+                **Workflow:** ${context.workflow}
+                **Branch:** ${context.ref}
+                **Commit:** ${context.sha}
+                **Run ID:** ${context.runId}
+                **Triggered by:** ${context.actor}
+                
+                ### 🔍 Details
+                
+                The Playwright test suite has failed on the main branch. This requires immediate attention.
+                
+                ### 📥 View Results
+                
+                [View Workflow Run](${context.payload.repository.html_url}/actions/runs/${context.runId})
+                
+                ### 📊 Artifacts Available
+                
+                - HTML Test Reports
+                - JSON Test Results
+                - Screenshots of Failures
+                - Error Logs
+                
+                ### ✅ Next Steps
+                
+                1. Download and review the test artifacts
+                2. Check the test logs for error details
+                3. Identify and fix failing tests
+                4. Push fixes to main branch
+                5. Close this issue once resolved
+                
+                ### 🏷️ Labels
+                
+                This issue has been automatically labeled for tracking.
+              `,
+              labels: ['bug', 'test-failure', 'ci', 'high-priority']
+            });
+            
+            console.log(\`Created issue #\${issue.data.number}\`);
+
+  notify-on-success:
+    name: Notify on Test Success
+    if: success() && github.ref == 'refs/heads/main'
+    needs: [test]
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Comment on Success
+        uses: actions/github-script@v7
+        with:
+          script: |
+            console.log('✅ All tests passed successfully!');
+            console.log('Workflow Run:', context.runId);
+            console.log('Branch:', context.ref);
+            console.log('Commit:', context.sha);

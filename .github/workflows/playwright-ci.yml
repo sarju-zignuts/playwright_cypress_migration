@@ -6,163 +6,224 @@ on:
   pull_request:
     branches: [main, develop]
   schedule:
-    # Run tests every 6 hours
+    # Run every 6 hours
     - cron: '0 */6 * * *'
   workflow_dispatch:
-    # Allow manual trigger
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOBS
+# ─────────────────────────────────────────────────────────────────────────────
 
 jobs:
+
+  # ── 1. Run tests (sharded across chromium + webkit) ──────────────────────
   test:
     name: Test on ${{ matrix.browser }} (Shard ${{ matrix.shard }})
     timeout-minutes: 60
     runs-on: ubuntu-latest
-    
+
     strategy:
       fail-fast: false
       matrix:
-        browser: [chromium, webkit]  # Chrome + Safari only
-        shard: [1/3, 2/3, 3/3]
-    
+        browser: [chromium, webkit]   # Chrome + Safari
+        shard:   [1/3, 2/3, 3/3]
+
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
-      
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
-      
+
       - name: Install dependencies
         run: npm ci
-      
-      - name: Install Playwright Browsers
-        run: npx playwright install --with-deps ${{ matrix.browser }}
-      
-      - name: Run Playwright tests
-        run: npx playwright test tests/migrated --project=${{ matrix.browser }} --shard=${{ matrix.shard }}
-        env:
-          BASE_URL: ${{ secrets.BASE_URL || 'https://opensource-demo.orangehrmlive.com' }}
-          ORANGEHRM_USERNAME: ${{ secrets.ORANGEHRM_USERNAME || 'Admin' }}
-          ORANGEHRM_PASSWORD: ${{ secrets.ORANGEHRM_PASSWORD || 'admin123' }}
-      
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-report-${{ matrix.browser }}-shard-${{ strategy.job-index }}
-          path: playwright-report/
-          retention-days: 30
-      
-      - name: Upload test artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-${{ matrix.browser }}-shard-${{ strategy.job-index }}
-          path: test-results/
-          retention-days: 30
 
-  merge-reports:
-    name: Merge Test Reports
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+
+      - name: Run tests  (blob reporter – merged later)
+        continue-on-error: true
+        run: |
+          npx playwright test tests/migrated \
+            --project=${{ matrix.browser }} \
+            --shard=${{ matrix.shard }} \
+            --reporter=blob
+        env:
+          BASE_URL:             ${{ secrets.BASE_URL             || 'https://opensource-demo.orangehrmlive.com' }}
+          ORANGEHRM_USERNAME:   ${{ secrets.ORANGEHRM_USERNAME   || 'Admin' }}
+          ORANGEHRM_PASSWORD:   ${{ secrets.ORANGEHRM_PASSWORD   || 'admin123' }}
+
+      - name: Upload blob report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # job-index gives a unique integer per matrix cell → no name collisions
+          name: blob-report-${{ matrix.browser }}-${{ strategy.job-index }}
+          path: blob-report/
+          retention-days: 1
+          if-no-files-found: warn
+
+  # ── 2. Merge all blobs → detailed summary + PDF + email ───────────────────
+  merge-and-report:
+    name: Merge Reports & Send Email
     if: always()
     needs: [test]
     runs-on: ubuntu-latest
-    
+
+    permissions:
+      checks:        write   # for EnricoMi PR check annotation
+      pull-requests: write
+
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
-      
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      
+
       - name: Install dependencies
         run: npm ci
-      
-      - name: Download all artifacts
+
+      # Chromium is needed to generate the PDF (Playwright page.pdf())
+      - name: Install Chromium (for PDF)
+        run: npx playwright install chromium --with-deps
+
+      # ── Download every blob from every shard ────────────────────────────
+      - name: Download all blob reports
         uses: actions/download-artifact@v4
         with:
-          path: all-reports
-      
+          pattern: blob-report-*
+          path: all-blob-reports
+          merge-multiple: true
+
+      # ── Merge blobs → HTML + JSON + JUnit ───────────────────────────────
       - name: Merge reports
+        continue-on-error: true
         run: |
-          npx playwright merge-reports --reporter html ./all-reports
-      
-      - name: Upload merged report
+          mkdir -p test-results playwright-report
+          npx playwright merge-reports \
+            --reporter html,json,junit \
+            ./all-blob-reports
+        env:
+          # Explicit output paths so the scripts below always find them
+          PLAYWRIGHT_JSON_OUTPUT_NAME:  test-results/results.json
+          PLAYWRIGHT_JUNIT_OUTPUT_NAME: test-results/junit.xml
+
+      # ── Build GitHub Step Summary + email HTML ───────────────────────────
+      - name: Generate detailed report
+        if: always()
+        run: node scripts/generate-report.js test-results/results.json test-results/email-report.html
+
+      # ── Convert HTML → PDF ───────────────────────────────────────────────
+      - name: Generate PDF
+        if: always()
+        continue-on-error: true
+        run: node scripts/generate-pdf.js test-results/email-report.html test-results/playwright-report.pdf
+
+      # ── Publish JUnit results as PR check / annotation ───────────────────
+      - name: Publish JUnit results
+        if: always()
+        continue-on-error: true
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files:         test-results/junit.xml
+          check_name:    Playwright Results (Chrome + Safari)
+          comment_title: "🎭 Playwright Test Results"
+
+      # ── Upload HTML report artifact ──────────────────────────────────────
+      - name: Upload HTML report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: merged-playwright-report
+          name: playwright-html-report
           path: playwright-report/
           retention-days: 30
 
+      # ── Upload PDF artifact ──────────────────────────────────────────────
+      - name: Upload PDF report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-pdf-report
+          path: test-results/playwright-report.pdf
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ── Guard: only send email when SMTP secrets are configured ──────────
+      - name: Check email configuration
+        if: always()
+        id: email-check
+        run: |
+          if [ -n "$SMTP_SERVER" ] && [ -n "$SMTP_USERNAME" ] && [ -n "$REPORT_EMAIL" ]; then
+            echo "enabled=true"  >> "$GITHUB_OUTPUT"
+            echo "✅ Email is configured – report will be sent."
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️  Email not configured."
+            echo "    Set secrets: SMTP_SERVER, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, REPORT_EMAIL"
+          fi
+        env:
+          SMTP_SERVER:  ${{ secrets.SMTP_SERVER }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          REPORT_EMAIL: ${{ secrets.REPORT_EMAIL }}
+
+      # ── Send email with PDF attachment ───────────────────────────────────
+      - name: Send email report
+        if: always() && steps.email-check.outputs.enabled == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port:    ${{ secrets.SMTP_PORT || '587' }}
+          username:       ${{ secrets.SMTP_USERNAME }}
+          password:       ${{ secrets.SMTP_PASSWORD }}
+          subject:        "🎭 Playwright Report — ${{ github.ref_name }} #${{ github.run_number }}"
+          to:             ${{ secrets.REPORT_EMAIL }}
+          from:           "Playwright CI <${{ secrets.SMTP_USERNAME }}>"
+          html_body:      file://test-results/email-report.html
+          attachments:    test-results/playwright-report.pdf
+          ignore_cert:    true
+
+  # ── 3. Create a GitHub Issue when scheduled run fails ─────────────────────
   notify:
     name: Notify on Failure
     if: failure() && github.event_name == 'schedule'
     needs: [test]
     runs-on: ubuntu-latest
-    
+
     steps:
-      - name: Create Issue on Failure
+      - name: Create issue on failure
         uses: actions/github-script@v7
         with:
           script: |
             const issue = await github.rest.issues.create({
               owner: context.repo.owner,
-              repo: context.repo.repo,
+              repo:  context.repo.repo,
               title: '🚨 Scheduled Playwright Tests Failed',
               body: `
-                ## Test Failure Report
-                
-                **Workflow:** ${context.workflow}
-                **Run ID:** ${context.runId}
-                **Run Number:** ${context.runNumber}
-                **Triggered by:** ${context.eventName}
-                **Branch:** ${context.ref}
-                **Commit:** ${context.sha}
-                
-                ### Details
-                
-                The scheduled Playwright test run has failed. Please investigate the test results.
-                
-                [View Workflow Run](${context.payload.repository.html_url}/actions/runs/${context.runId})
-                
-                ### Next Steps
-                
-                1. Review the test artifacts
-                2. Check the test logs
-                3. Fix failing tests
-                4. Close this issue once resolved
-              `,
-              labels: ['bug', 'automated-test-failure', 'ci']
-            });
-            
-            console.log(`Created issue #${issue.data.number}`);
+            ## Test Failure Report
 
-  summary:
-    name: Test Summary
-    if: always()
-    needs: [test]
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Generate Summary
-        run: |
-          echo "## 🎭 Playwright Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Workflow:** ${{ github.workflow }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Triggered by:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Execution" >> $GITHUB_STEP_SUMMARY
-          echo "- Browsers: Chromium (Chrome), WebKit (Safari)" >> $GITHUB_STEP_SUMMARY
-          echo "- Shards: 3 per browser" >> $GITHUB_STEP_SUMMARY
-          echo "- Total Jobs: 6 (2 browsers × 3 shards)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
-          echo "- Test reports available for 30 days" >> $GITHUB_STEP_SUMMARY
-          echo "- Screenshots and videos included" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Status" >> $GITHUB_STEP_SUMMARY
-          echo "Check individual job results above for details." >> $GITHUB_STEP_SUMMARY
+            | Field | Value |
+            |-------|-------|
+            | Workflow | ${context.workflow} |
+            | Run ID   | ${context.runId} |
+            | Run #    | ${context.runNumber} |
+            | Branch   | ${context.ref} |
+            | Commit   | ${context.sha} |
+            | Trigger  | ${context.eventName} |
+
+            The scheduled Playwright test run failed.
+            [View Workflow Run](${context.payload.repository.html_url}/actions/runs/${context.runId})
+
+            ### Next Steps
+            1. Download the PDF/HTML report from the workflow artifacts
+            2. Check individual shard logs for error details
+            3. Fix failing tests and close this issue
+              `,
+              labels: ['bug', 'automated-test-failure', 'ci'],
+            });
+            console.log(`Created issue #${issue.data.number}`);
